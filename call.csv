@@ -1,0 +1,5 @@
+package;nginx
+repository;https://repo.ubuntu.com
+test_mode;true
+ascii_tree;false
+filter_substring;dev
