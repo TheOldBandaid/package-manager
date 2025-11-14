@@ -13,6 +13,7 @@ class DependencyVisualizer:
         self.config = {}
         self.visited_packages = set()
         self.dependency_graph = {}
+        self.reverse_dependency_graph = {}
         
     def load_config_from_csv(self, config_file: str) -> Dict[str, Any]:
         config = {}
@@ -209,6 +210,11 @@ class DependencyVisualizer:
         
         self.dependency_graph[package_name] = set(dependencies)
         
+        for dep in dependencies:
+            if dep not in self.reverse_dependency_graph:
+                self.reverse_dependency_graph[dep] = set()
+            self.reverse_dependency_graph[dep].add(package_name)
+        
         new_path = current_path + [package_name]
         all_dependencies = set(dependencies)
         
@@ -279,6 +285,50 @@ class DependencyVisualizer:
                 print(f"{prefix}{connector}", end="")
                 self._print_ascii_tree(dep, visited.copy(), new_prefix)
     
+    def find_reverse_dependencies(self, target_package: str, config: Dict[str, Any]) -> Set[str]:
+        reverse_deps = set()
+        
+        if target_package in self.reverse_dependency_graph:
+            return self.reverse_dependency_graph[target_package]
+        
+        if config['test_mode']:
+            test_file = config.get('test_file', 'test.txt')
+            try:
+                with open(test_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    
+                    lines = content.strip().split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if '->' in line:
+                            parts = line.split('->', 1)
+                            if len(parts) == 2:
+                                pkg, deps = parts
+                                pkg = pkg.strip()
+                                dependencies = [dep.strip() for dep in deps.split(',') if dep.strip()]
+                                
+                                if target_package in dependencies:
+                                    reverse_deps.add(pkg)
+                                    
+            except Exception as e:
+                print(f"Ошибка при поиске обратных зависимостей: {str(e)}")
+        
+        return reverse_deps
+    
+    def print_reverse_dependencies(self, target_package: str, config: Dict[str, Any]) -> None:
+        print(f"\nОбратные зависимости пакета '{target_package}':")
+        print("-" * 50)
+        
+        reverse_deps = self.find_reverse_dependencies(target_package, config)
+        
+        if not reverse_deps:
+            print("Обратные зависимости не найдены")
+        else:
+            for i, dep in enumerate(sorted(reverse_deps), 1):
+                print(f"{i}. {dep}")
+        
+        print("-" * 50)
+    
     def run_stage1(self, config: Dict[str, Any]) -> None:
         print("Загрузка конфигурации...")
         self.validate_config(config)
@@ -293,9 +343,9 @@ class DependencyVisualizer:
     def run_stage3(self, config: Dict[str, Any]) -> None:
         print("\nПостроение полного графа зависимостей...")
         
-
         self.visited_packages = set()
         self.dependency_graph = {}
+        self.reverse_dependency_graph = {}
         
         package_name = config['package']
         filter_substring = config.get('filter_substring', '')
@@ -318,6 +368,25 @@ class DependencyVisualizer:
             print(f"Транзитивные зависимости: {transitive_deps}")
         
         print("Граф зависимостей успешно построен!")
+    
+    def run_stage4(self, config: Dict[str, Any]) -> None:
+        print("\nЭтап 4: Поиск обратных зависимостей")
+        
+        if not self.dependency_graph:
+            print("Построение графа зависимостей...")
+            self.visited_packages = set()
+            self.dependency_graph = {}
+            self.reverse_dependency_graph = {}
+            self.build_dependency_graph_dfs(config['package'], config)
+        
+        target_package = input("Введите имя пакета для поиска обратных зависимостей: ").strip()
+        
+        if not target_package:
+            target_package = config['package']
+            print(f"Используется пакет из конфигурации: {target_package}")
+        
+        self.print_reverse_dependencies(target_package, config)
+        print("Поиск обратных зависимостей завершен!")
     
     def run(self):
         parser = argparse.ArgumentParser(
@@ -354,6 +423,10 @@ class DependencyVisualizer:
             
             if args.stage >= 3:
                 self.run_stage3(config)
+            
+            if args.stage >= 4:
+                self.run_stage4(config)
+                
         except Exception as e:
             print(f"Ошибка: {str(e)}", file=sys.stderr)
             sys.exit(1)
