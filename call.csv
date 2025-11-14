@@ -1,5 +1,6 @@
 package;nginx
-repository;https://repo.ubuntu.com
+repository;http://archive.ubuntu.com/ubuntu
 test_mode;true
 ascii_tree;false
 filter_substring;dev
+test_file;test.txt 

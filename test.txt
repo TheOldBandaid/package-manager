@@ -1,0 +1,7 @@
+nginx -> libc6,libpcre3,libssl3,zlib1g,nginx-common,nginx-core
+libc6 -> 
+libpcre3 -> libc6
+libssl3 -> libc6
+zlib1g -> libc6
+nginx-common -> 
+nginx-core -> libc6,libpcre3,libssl3,zlib1g

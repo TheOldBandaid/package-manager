@@ -1,7 +1,12 @@
 import argparse
 import sys
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List
+import urllib.request
+import urllib.error
+import re
+import gzip
+import io
 
 class DependencyVisualizer:
     def __init__(self):
@@ -48,6 +53,9 @@ class DependencyVisualizer:
             if param not in config:
                 raise ValueError(f"Отсутствует обязательный параметр: {param}")
         
+        if config.get('test_mode') and not config.get('test_file'):
+            raise ValueError("В тестовом режиме должен быть указан test_file")
+
         repo_url = config.get('repository', '')
         if not repo_url:
             raise ValueError("URL репозитория или путь к файлу не может быть пустым")
@@ -67,6 +75,112 @@ class DependencyVisualizer:
             print(f"{key}: {value}")
         print("-" * 40)
     
+    def get_package_dependencies_ubuntu(self, package_name: str, repo_url: str) -> List[str]:
+        dependencies = []
+    
+        try:
+            if "ubuntu.com" in repo_url:
+                url = f"{repo_url}/dists/focal/main/binary-amd64/Packages.gz"
+            else:
+                url = f"{repo_url}/Packages"
+            
+            print(f"Загрузка информации о пакете из: {url}")
+            
+            with urllib.request.urlopen(url) as response:
+                if url.endswith('.gz'):
+                    compressed_file = io.BytesIO(response.read())
+                    with gzip.GzipFile(fileobj=compressed_file) as f:
+                        content = f.read().decode('utf-8', errors='ignore')
+                else:
+                    content = response.read().decode('utf-8', errors='ignore')
+                
+                package_pattern = f"Package: {package_name}"
+                if package_pattern in content:
+                    start_idx = content.find(package_pattern)
+                    end_idx = content.find("\n\n", start_idx)
+                    package_info = content[start_idx:end_idx]
+                    print(f"Информация о пакете: {package_info}")  
+                    
+                    dep_pattern = r"Depends:\s*(.+)"
+                    match = re.search(dep_pattern, package_info)
+                    
+                    if match:
+                        depends_line = match.group(1)
+                        deps = re.findall(r'([a-zA-Z0-9\-\.]+)', depends_line)
+                        dependencies = [dep.strip() for dep in deps if dep.strip()]
+                
+        except urllib.error.URLError as e:
+            raise ValueError(f"Ошибка при загрузке данных из репозитория: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Ошибка при обработке данных пакета: {str(e)}")
+        
+        return dependencies
+    
+    def get_test_dependencies(self, package_name: str, test_file: str) -> List[str]:
+        dependencies = []
+        
+        try:
+            with open(test_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                
+                lines = content.strip().split('\n')
+                for line in lines:
+                    if '->' in line:
+                        pkg, deps = line.split('->', 1)
+                        if pkg.strip() == package_name:
+                            dependencies = [dep.strip() for dep in deps.split(',') if dep.strip()]
+                            break
+                            
+        except FileNotFoundError:
+            raise ValueError(f"Тестовый файл не найден: {test_file}")
+        except Exception as e:
+            raise ValueError(f"Ошибка чтения тестового файла: {str(e)}")
+        
+        return dependencies
+    
+    def collect_dependencies(self, config: Dict[str, Any]) -> List[str]:
+        package_name = config['package']
+        test_mode = config['test_mode']
+        
+        print(f"\nСбор данных для пакета: {package_name}")
+        print(f"Режим тестирования: {'включен' if test_mode else 'выключен'}")
+        
+        dependencies = []
+        
+        if test_mode:
+            print("Используется тестовый режим")
+            test_file = config.get('test_file', 'test.txt')
+            dependencies = self.get_test_dependencies(package_name, test_file)
+        else:
+            repository = config['repository']
+            print(f"Подключение к репозиторию: {repository}")
+            dependencies = self.get_package_dependencies_ubuntu(package_name, repository)
+        
+        return dependencies
+    
+    def print_dependencies(self, dependencies: List[str], package_name: str) -> None:
+        print(f"\nПрямые зависимости пакета '{package_name}':")
+        print("-" * 40)
+        
+        if not dependencies:
+            print("Зависимости не найдены")
+        else:
+            for i, dep in enumerate(dependencies, 1):
+                print(f"{i}. {dep}")
+        
+        print("-" * 40)
+    
+    def run_stage1(self, config: Dict[str, Any]) -> None:
+        print("Загрузка конфигурации...")
+        self.validate_config(config)
+        self.print_config(config)
+        print("Конфигурация успешно загружена и валидирована!")
+    
+    def run_stage2(self, config: Dict[str, Any]) -> None:
+        dependencies = self.collect_dependencies(config)
+        self.print_dependencies(dependencies, config['package'])
+        print("Данные о зависимостях успешно собраны!")
+    
     def run(self):
         parser = argparse.ArgumentParser(
             description='Инструмент визуализации графа зависимостей',
@@ -80,19 +194,25 @@ class DependencyVisualizer:
             help='Путь к конфигурационному файлу в формате CSV'
         )
         
+        parser.add_argument(
+            '--stage',
+            type=int,
+            choices=[1, 2, 3, 4, 5],
+            default=1,
+            help='Номер этапа для выполнения (1-5)'
+        )
+        
         try:
             args = parser.parse_args()
             
             print("Загрузка конфигурации...")
             config = self.load_config_from_csv(args.config)
             
-            print("Валидация параметров...")
-            self.validate_config(config)
+            if args.stage >= 1:
+                self.run_stage1(config)
             
-            self.print_config(config)
-            
-            print("Конфигурация успешно загружена и валидирована!")
-            
+            if args.stage >= 2:
+                self.run_stage2(config)
         except Exception as e:
             print(f"Ошибка: {str(e)}", file=sys.stderr)
             sys.exit(1)
@@ -100,7 +220,7 @@ class DependencyVisualizer:
 
 def main():
     if len(sys.argv) == 1:
-        print("Использование: python dependency_visualizer.py --config <config_file.csv>")
+        print("Использование: python dependency_visualizer.py --config <config_file.csv> [--stage N]")
         return
     
     visualizer = DependencyVisualizer()
