@@ -1,0 +1,9 @@
+[file name]: config_stage3.csv
+[file content begin]
+package;A
+repository;test_repo
+test_mode;true
+ascii_tree;true
+filter_substring;X
+test_file;test_phase3.txt
+[file content end]

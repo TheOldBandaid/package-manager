@@ -1,7 +1,7 @@
 import argparse
 import sys
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Set
 import urllib.request
 import urllib.error
 import re
@@ -11,28 +11,38 @@ import io
 class DependencyVisualizer:
     def __init__(self):
         self.config = {}
+        self.visited_packages = set()
+        self.dependency_graph = {}
         
     def load_config_from_csv(self, config_file: str) -> Dict[str, Any]:
         config = {}
         try:
             with open(config_file, 'r', encoding='utf-8') as f:
-                for line in f:
+                for line_num, line in enumerate(f, 1):
                     line = line.strip()
                     if line and not line.startswith('#'):
                         if ';' in line:
-                            key, value = line.split(';', 1)
+                            parts = line.split(';', 1)
+                        elif ',' in line:
+                            parts = line.split(',', 1)
                         else:
-                            key, value = line.split(',', 1)
-                        key = key.strip()
-                        value = value.strip()
+                            print(f"Предупреждение: строка {line_num} пропущена - неверный формат: {line}")
+                            continue
                         
-                        if value.lower() in ['true', 'false']:
-                            value = value.lower() == 'true'
-                        elif value.isdigit():
-                            value = int(value)
+                        if len(parts) == 2:
+                            key, value = parts
+                            key = key.strip()
+                            value = value.strip()
                             
-                        config[key] = value
-                        
+                            if value.lower() in ['true', 'false']:
+                                value = value.lower() == 'true'
+                            elif value.isdigit():
+                                value = int(value)
+                                
+                            config[key] = value
+                        else:
+                            print(f"Предупреждение: строка {line_num} пропущена - неверный формат: {line}")
+                            
         except FileNotFoundError:
             raise ValueError(f"Конфигурационный файл не найден: {config_file}")
         except Exception as e:
@@ -99,7 +109,6 @@ class DependencyVisualizer:
                     start_idx = content.find(package_pattern)
                     end_idx = content.find("\n\n", start_idx)
                     package_info = content[start_idx:end_idx]
-                    print(f"Информация о пакете: {package_info}")  
                     
                     dep_pattern = r"Depends:\s*(.+)"
                     match = re.search(dep_pattern, package_info)
@@ -125,11 +134,14 @@ class DependencyVisualizer:
                 
                 lines = content.strip().split('\n')
                 for line in lines:
+                    line = line.strip()
                     if '->' in line:
-                        pkg, deps = line.split('->', 1)
-                        if pkg.strip() == package_name:
-                            dependencies = [dep.strip() for dep in deps.split(',') if dep.strip()]
-                            break
+                        parts = line.split('->', 1)
+                        if len(parts) == 2:
+                            pkg, deps = parts
+                            if pkg.strip() == package_name:
+                                dependencies = [dep.strip() for dep in deps.split(',') if dep.strip()]
+                                break
                             
         except FileNotFoundError:
             raise ValueError(f"Тестовый файл не найден: {test_file}")
@@ -170,6 +182,103 @@ class DependencyVisualizer:
         
         print("-" * 40)
     
+    def build_dependency_graph_dfs(self, package_name: str, config: Dict[str, Any], current_path: List[str] = None) -> Set[str]:
+        if current_path is None:
+            current_path = []
+        
+        if package_name in current_path:
+            cycle_path = ' -> '.join(current_path + [package_name])
+            print(f"Обнаружена циклическая зависимость: {cycle_path}")
+            return set()
+        
+        filter_substring = config.get('filter_substring', '')
+        if filter_substring and filter_substring in package_name:
+            print(f"Пакет '{package_name}' отфильтрован по подстроке '{filter_substring}'")
+            return set()
+
+        if package_name in self.dependency_graph:
+            return self.dependency_graph[package_name]
+        
+        dependencies = []
+        if config['test_mode']:
+            test_file = config.get('test_file', 'test.txt')
+            dependencies = self.get_test_dependencies(package_name, test_file)
+        else:
+            repository = config['repository']
+            dependencies = self.get_package_dependencies_ubuntu(package_name, repository)
+        
+        self.dependency_graph[package_name] = set(dependencies)
+        
+        new_path = current_path + [package_name]
+        all_dependencies = set(dependencies)
+        
+        for dep in dependencies:
+            if dep not in self.visited_packages:
+                self.visited_packages.add(dep)
+                transitive_deps = self.build_dependency_graph_dfs(dep, config, new_path)
+                all_dependencies.update(transitive_deps)
+        
+        self.dependency_graph[package_name] = all_dependencies
+        
+        return all_dependencies
+    
+    def print_dependency_graph(self, config: Dict[str, Any]) -> None:
+        package_name = config['package']
+        ascii_tree = config.get('ascii_tree', False)
+        
+        print(f"\nПолный граф зависимостей пакета '{package_name}':")
+        print("-" * 50)
+        
+        if package_name not in self.dependency_graph:
+            print("Граф зависимостей не построен")
+            return
+        
+        if ascii_tree:
+            self._print_ascii_tree(package_name, set())
+        else:
+            self._print_simple_list(package_name)
+        
+        print("-" * 50)
+    
+    def _print_simple_list(self, package_name: str, indent: int = 0, visited: Set[str] = None) -> None:
+        if visited is None:
+            visited = set()
+            
+        if package_name in visited:
+            print("  " * indent + f"└── {package_name} (уже показан)")
+            return
+            
+        visited.add(package_name)
+        dependencies = self.dependency_graph.get(package_name, set())
+        
+        if indent == 0:
+            print(f"{package_name}")
+        
+        for dep in sorted(dependencies):
+            print("  " * (indent + 1) + f"└── {dep}")
+            if dep in self.dependency_graph and self.dependency_graph[dep]:
+                self._print_simple_list(dep, indent + 2, visited.copy())
+    
+    def _print_ascii_tree(self, package_name: str, visited: Set[str], prefix: str = "") -> None:
+        if package_name in visited:
+            print(f"{prefix}└── {package_name} (цикл)")
+            return
+        
+        visited.add(package_name)
+        dependencies = self.dependency_graph.get(package_name, set())
+        
+        print(f"{prefix}{package_name}")
+        
+        if dependencies:
+            sorted_deps = sorted(dependencies)
+            for i, dep in enumerate(sorted_deps):
+                is_last = i == len(sorted_deps) - 1
+                new_prefix = prefix + ("    " if is_last else "│   ")
+                connector = "└── " if is_last else "├── "
+                
+                print(f"{prefix}{connector}", end="")
+                self._print_ascii_tree(dep, visited.copy(), new_prefix)
+    
     def run_stage1(self, config: Dict[str, Any]) -> None:
         print("Загрузка конфигурации...")
         self.validate_config(config)
@@ -180,6 +289,35 @@ class DependencyVisualizer:
         dependencies = self.collect_dependencies(config)
         self.print_dependencies(dependencies, config['package'])
         print("Данные о зависимостях успешно собраны!")
+    
+    def run_stage3(self, config: Dict[str, Any]) -> None:
+        print("\nПостроение полного графа зависимостей...")
+        
+
+        self.visited_packages = set()
+        self.dependency_graph = {}
+        
+        package_name = config['package']
+        filter_substring = config.get('filter_substring', '')
+        
+        print(f"Пакет: {package_name}")
+        if filter_substring:
+            print(f"Фильтрация по подстроке: '{filter_substring}'")
+        
+        all_dependencies = self.build_dependency_graph_dfs(package_name, config)
+        
+        self.print_dependency_graph(config)
+        
+        total_packages = len(self.dependency_graph)
+        print(f"\nСтатистика графа:")
+        print(f"Всего пакетов в графе: {total_packages}")
+        if package_name in self.dependency_graph:
+            direct_deps = len(self.collect_dependencies(config))
+            transitive_deps = len(self.dependency_graph[package_name])
+            print(f"Прямые зависимости: {direct_deps}")
+            print(f"Транзитивные зависимости: {transitive_deps}")
+        
+        print("Граф зависимостей успешно построен!")
     
     def run(self):
         parser = argparse.ArgumentParser(
@@ -213,6 +351,9 @@ class DependencyVisualizer:
             
             if args.stage >= 2:
                 self.run_stage2(config)
+            
+            if args.stage >= 3:
+                self.run_stage3(config)
         except Exception as e:
             print(f"Ошибка: {str(e)}", file=sys.stderr)
             sys.exit(1)

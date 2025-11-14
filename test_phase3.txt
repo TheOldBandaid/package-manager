@@ -1,0 +1,26 @@
+[file name]: test_phase3.txt.txt
+[file content begin]
+A -> B,C
+B -> D,E
+C -> F,G
+D -> H
+E -> B,H
+F -> 
+G -> C
+H -> 
+I -> J,K
+J -> I
+K -> L
+L -> M
+M -> K
+[file content end]
+
+[file name]: config_stage3.csv
+[file content begin]
+package;A
+repository;test_repo
+test_mode;true
+ascii_tree;true
+filter_substring;X
+test_file;test_phase3.txt.txt
+[file content end]
