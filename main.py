@@ -7,6 +7,8 @@ import urllib.error
 import re
 import gzip
 import io
+import subprocess
+import tempfile
 
 class DependencyVisualizer:
     def __init__(self):
@@ -328,7 +330,136 @@ class DependencyVisualizer:
                 print(f"{i}. {dep}")
         
         print("-" * 50)
-    
+
+    def generate_d2_diagram(self, config: Dict[str, Any]) -> str:
+        package_name = config['package']
+        
+        if not self.dependency_graph:
+            print("Построение графа зависимостей...")
+            self.visited_packages = set()
+            self.dependency_graph = {}
+            self.reverse_dependency_graph = {}
+            self.build_dependency_graph_dfs(package_name, config)
+        
+        d2_content = "# Граф зависимостей пакетов\n\n"
+        
+        all_nodes = set()
+        edges = []
+        
+        for node, deps in self.dependency_graph.items():
+            all_nodes.add(node)
+            for dep in deps:
+                all_nodes.add(dep)
+                edges.append((node, dep))
+        
+        for node in sorted(all_nodes):
+            if node == package_name:
+                d2_content += f'{node}: {{\n  style: {{\n    fill: "#e1f5fe"\n    stroke: "#01579b"\n  }}\n}}\n'
+            else:
+                d2_content += f"{node}\n"
+        
+        d2_content += "\n"
+        
+        for source, target in edges:
+            d2_content += f"{source} -> {target}\n"
+        
+        return d2_content
+
+    def save_d2_diagram(self, d2_content: str, output_file: str = "dependency_graph.d2") -> str:
+        try:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(d2_content)
+            return output_file
+        except Exception as e:
+            raise ValueError(f"Ошибка сохранения D2 файла: {str(e)}")
+
+    def render_d2_diagram(self, d2_file: str, output_format: str = "png") -> str:
+        try:
+            output_file = d2_file.replace('.d2', f'.{output_format}')
+            
+            result = subprocess.run(['d2', '--version'], capture_output=True, text=True)
+            if result.returncode != 0:
+                print("Предупреждение: D2 CLI не установлен. Установите его с помощью 'brew install d2' или следуя инструкциям с https://d2lang.com/")
+                return d2_file
+            
+            cmd = ['d2', d2_file, output_file]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                print(f"Диаграмма сохранена как: {output_file}")
+                return output_file
+            else:
+                print(f"Ошибка рендеринга D2 диаграммы: {result.stderr}")
+                return d2_file
+                
+        except Exception as e:
+            print(f"Ошибка при рендеринге D2 диаграммы: {str(e)}")
+            return d2_file
+
+    def print_d2_diagram_description(self, d2_content: str) -> None:
+        print("\nОписание графа на языке D2:")
+        print("-" * 50)
+        print(d2_content)
+        print("-" * 50)
+
+    def run_stage5(self, config: Dict[str, Any]) -> None:
+        print("1. Генерация описания графа на языке D2...")
+        d2_content = self.generate_d2_diagram(config)
+        
+        print("2. Вывод описания графа на языке D2...")
+        self.print_d2_diagram_description(d2_content)
+        
+        if config.get('ascii_tree', False):
+            print("3. Вывод зависимостей в виде ASCII-дерева...")
+            self.print_dependency_graph(config)
+        
+        print("4. Демонстрация визуализации для различных пакетов...")
+        self.demo_multiple_packages(config)
+        
+        print("5. Сохранение D2 диаграммы...")
+        d2_file = self.save_d2_diagram(d2_content)
+        print(f"D2 описание сохранено в файл: {d2_file}")
+        
+        print("6. Попытка рендеринга диаграммы...")
+        rendered_file = self.render_d2_diagram(d2_file, "png")
+        
+        if rendered_file != d2_file:
+            print(f"✓ Диаграмма успешно отрендерена: {rendered_file}")
+        else:
+            print("ℹ Диаграмма не отрендерена (требуется установка D2 CLI)")
+
+    def demo_multiple_packages(self, config: Dict[str, Any]) -> None:
+        original_package = config['package']
+        
+        demo_packages = [original_package, "B", "C"] if config['test_mode'] else [original_package, "libc6", "nginx-common"]
+        
+        print("\nДемонстрация для различных пакетов:")
+        
+        for i, pkg in enumerate(demo_packages, 1):
+            if pkg in self.dependency_graph:
+                print(f"{i}. Пакет '{pkg}': {len(self.dependency_graph[pkg])} зависимостей")
+                
+                temp_config = config.copy()
+                temp_config['package'] = pkg
+                
+                if pkg != original_package:
+                    temp_visited = set()
+                    temp_dependency_graph = {}
+                    temp_reverse_dependency_graph = {}
+                    
+                    self.build_dependency_graph_dfs(pkg, temp_config)
+                
+                d2_content = self.generate_d2_diagram(temp_config)
+                d2_file = f"demo_{pkg}.d2"
+                self.save_d2_diagram(d2_content, d2_file)
+                print(f"   D2 описание сохранено в: {d2_file}")
+                
+                rendered = self.render_d2_diagram(d2_file, "png")
+                if rendered != d2_file:
+                    print(f"   Диаграмма отрендерена: {rendered}")
+        
+        print("-" * 40)
+
     def run_stage1(self, config: Dict[str, Any]) -> None:
         print("Загрузка конфигурации...")
         self.validate_config(config)
@@ -426,6 +557,9 @@ class DependencyVisualizer:
             
             if args.stage >= 4:
                 self.run_stage4(config)
+            
+            if args.stage >= 5:
+                self.run_stage5(config)
                 
         except Exception as e:
             print(f"Ошибка: {str(e)}", file=sys.stderr)
